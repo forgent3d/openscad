@@ -59,7 +59,7 @@ cp "${REPO_ROOT}/fonts/10-liberation.conf" "${DIST_DIR}/fonts/10-liberation.conf
 commit="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
 dirty="$(git -C "${REPO_ROOT}" status --porcelain --untracked-files=no -- src CMakeLists.txt | wc -l)"
 {
-  echo "OpenSCAD, Forgent3D fork (branch forgent3d): ${commit}$([ "${dirty}" -gt 0 ] && echo " + ${dirty} uncommitted file(s) — COMMIT THE FORK")"
+  echo "OpenSCAD, Forgent3D fork: https://github.com/forgent3d/openscad/tree/${commit} (branch forgent3d)$([ "${dirty}" -gt 0 ] && echo " + ${dirty} uncommitted file(s) — COMMIT AND PUSH THE FORK")"
   echo "emscripten: $(emcc --version | head -1)"
   echo "built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "${DIST_DIR}/BUILD.txt"

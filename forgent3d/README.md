@@ -1,6 +1,6 @@
 # OpenSCAD, Forgent3D fork
 
-Branch `forgent3d` of OpenSCAD, based on upstream `dc1998e4f` (2025-07-17 — the snapshot openscad-wasm 0.0.4
+https://github.com/forgent3d/openscad, branch `forgent3d`: OpenSCAD, based on upstream `dc1998e4f` (2025-07-17 — the snapshot openscad-wasm 0.0.4
 shipped as 2025.07.18). Forgent3D runs OpenSCAD only to **evaluate** `.scad` files: OpenSCAD executes the language,
 and Forgent3D's own CAD kernel builds exact geometry from the evaluated node tree. The consumer is
 `packages/cloud/lib/scad-transpile/` in the forgent3d-platform repo; the artifacts land in
@@ -8,7 +8,8 @@ and Forgent3D's own CAD kernel builds exact geometry from the evaluated node tre
 `docs/scad-endgame.md`.
 
 OpenSCAD is GPL-2.0-or-later (COPYING, with the CGAL linking exception). This fork's changes are under the same
-license and **must be published with every deployed build** (dist/BUILD.txt names the commit).
+license and **must be published with every deployed build**: push the branch before deploying a build of it
+(dist/BUILD.txt links the commit).
 
 ## What the fork changes
 
