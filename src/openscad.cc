@@ -90,6 +90,7 @@
 #include "core/ScopeContext.h"
 #include "core/Settings.h"
 #include "Feature.h"
+#include "utils/full_precision.h"
 #include "geometry/Geometry.h"
 #include "geometry/GeometryEvaluator.h"
 #include "geometry/GeometryUtils.h"
@@ -434,6 +435,7 @@ int do_export(const CommandLine& cmd, const RenderVariables& render_variables, F
   Tree tree(root_node, fparent.string());
 
   if (export_format == FileFormat::CSG) {
+    FullPrecisionScope full; // Forgent3D: numbers read back to the same double (utils/full_precision.h)
     // https://github.com/openscad/openscad/issues/128
     // When I use the csg ouptput from the command line the paths in 'import'
     // statements become relative. But unfortunately they become relative to
@@ -442,6 +444,15 @@ int do_export(const CommandLine& cmd, const RenderVariables& render_variables, F
     fs::current_path(fparent); // Force exported filenames to be relative to document path
     with_output(cmd.is_stdout, filename_str, [&tree, root_node](std::ostream& stream) {
       stream << tree.getString(*root_node, "\t") << "\n";
+    });
+    fs::current_path(cmd.original_path);
+  } else if (export_format == FileFormat::FGJSON) {
+    const auto found = cmd.exportOptions.find("fgjson");
+    const std::unordered_map<std::string, std::string> options = found == cmd.exportOptions.end() ? std::unordered_map<std::string, std::string>{} : found->second;
+    const auto output = fs::absolute(fs::path(filename_str)).generic_string(); // before the chdir below
+    fs::current_path(fparent); // the embedded .csg, like the CSG export: import() paths relative to the document
+    with_output(cmd.is_stdout, output, [&](std::ostream& stream) {
+      export_fgjson(tree, *root_node, root_file, fpath, options, stream);
     });
     fs::current_path(cmd.original_path);
   } else if (export_format == FileFormat::AST) {
@@ -563,6 +574,13 @@ int cmdline(const CommandLine& cmd)
     echostream.reset(cmd.is_stdout ? new Echostream(std::cout) : new Echostream(cmd.output_file));
   }
 
+  if (export_format == FileFormat::FGJSON) fgjson_collect_messages();
+  // Forgent3D: a run that stops before evaluation still writes its .fgjson — the log says why
+  const auto fgjson_failed = [&]() {
+    if (export_format != FileFormat::FGJSON) return;
+    with_output(cmd.is_stdout, fs::path(cmd.output_file).generic_string(), [](std::ostream& stream) { export_fgjson_failed(stream); });
+  };
+
   std::string text;
   if (cmd.is_stdin) {
     text = std::string((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>());
@@ -570,6 +588,7 @@ int cmdline(const CommandLine& cmd)
     std::ifstream ifs(cmd.filename);
     if (!ifs.is_open()) {
       LOG("Can't open input file '%1$s'!\n", cmd.filename);
+      fgjson_failed();
       return 1;
     }
     handle_dep(cmd.filename);
@@ -602,6 +621,7 @@ int cmdline(const CommandLine& cmd)
   }
   if (!root_file) {
     LOG("Can't parse file '%1$s'!\n", cmd.filename);
+    fgjson_failed();
     return 1;
   }
 
@@ -788,6 +808,7 @@ int main(int argc, char **argv)
   init_mimalloc();
 #endif
 
+  install_full_precision_facet(); // Forgent3D: before any stream exists (utils/full_precision.h)
   int rc = 0;
   StackCheck::inst();
 

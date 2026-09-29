@@ -20,6 +20,8 @@ namespace fs = std::filesystem;
 std::set<std::string> printedDeprecations;
 std::list<std::string> print_messages_stack;
 OutputHandlerFunc *outputhandler = nullptr;
+void (*message_tap)(const Message&) = nullptr;
+const Location *message_origin = nullptr;
 void *outputhandler_data = nullptr;
 std::string OpenSCAD::debug("");
 bool OpenSCAD::quiet = false;
@@ -83,6 +85,8 @@ void print_messages_pop()
 void PRINT(const Message& msgObj)
 {
   if (msgObj.msg.empty() && msgObj.group != message_group::Echo) return;
+
+  if (message_tap) message_tap(msgObj);
 
   if (print_messages_stack.size() > 0) {
     if (!print_messages_stack.back().empty()) {

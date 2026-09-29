@@ -45,7 +45,8 @@ enum class FileFormat {
   PNG,
   PDF,
   POV,
-  PARAM
+  PARAM,
+  FGJSON
 };
 
 struct FileFormatInfo {
@@ -265,5 +266,12 @@ std::unique_ptr<OffscreenView> prepare_preview(Tree& tree, const ViewOptions& op
 bool export_png(const std::shared_ptr<const class Geometry>& root_geom, const ViewOptions& options, Camera& camera, std::ostream& output);
 bool export_png(const OffscreenView& glview, std::ostream& output);
 bool export_param(SourceFile *root, const fs::path& path, std::ostream& output);
+
+// Forgent3D (export_fgjson.cc): the evaluated node tree as JSON, full precision, with source locations.
+// fgjson_collect_messages() before parsing, so the log has every message of the run.
+void fgjson_collect_messages();
+void export_fgjson(const Tree& tree, const AbstractNode& root, SourceFile *root_file, const fs::path& path,
+                   const std::unordered_map<std::string, std::string>& options, std::ostream& output);
+void export_fgjson_failed(std::ostream& output);
 
 std::unique_ptr<PolySet> createSortedPolySet(const PolySet& ps);

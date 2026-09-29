@@ -98,6 +98,12 @@ extern bool rangeCheck;
 }
 
 void set_output_handler(OutputHandlerFunc *newhandler, OutputHandlerFunc2 *newhandler2, void *userdata);
+
+// Forgent3D: sees every message (echo and trace included) before any filtering or suppression — the
+// structured export (export_fgjson.cc) collects them with their locations.
+extern void (*message_tap)(const Message&);
+// Forgent3D: where the echo() being logged was written; its console line carries no location.
+extern const Location *message_origin;
 void no_exceptions_for_warnings();
 bool would_have_thrown();
 

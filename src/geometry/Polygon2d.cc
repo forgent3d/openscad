@@ -185,5 +185,11 @@ std::unique_ptr<PolySet> Polygon2d::tessellate() const
   }
   else
 #endif
+#ifdef ENABLE_CGAL
   return CGALUtils::createTriangulatedPolySetFromPolygon2d(*this);
+#else
+  // Forgent3D slim build (no CGAL, no Manifold): evaluation and export only, never a render
+  LOG(message_group::Error, "This OpenSCAD build has no geometry backend: it cannot triangulate a polygon.");
+  return std::make_unique<PolySet>(2);
+#endif
 }

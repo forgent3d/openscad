@@ -559,6 +559,71 @@ FreetypeRenderer::TextMetrics::TextMetrics(
   ok = true;
 }
 
+namespace {
+
+// Forgent3D: FT_Outline_Decompose callbacks for FreetypeRenderer::outlines() — the point map is DrawingCallback's
+// add_vertex (size * (p + offset + advance)), applied to control points instead of to flattened vertices: the map is
+// affine, so a Bézier's image is the Bézier of the mapped control points.
+struct OutlineMapper {
+  FreetypeRenderer::OutlineSink *sink;
+  double size, scale;
+  Vector2d shift;
+  Vector2d map(const FT_Vector *v) const { return size * (Vector2d(v->x / scale, v->y / scale) + shift); }
+};
+
+int sink_move_to(const FT_Vector *to, void *user)
+{
+  auto *m = reinterpret_cast<OutlineMapper *>(user);
+  m->sink->move_to(m->map(to));
+  return 0;
+}
+
+int sink_line_to(const FT_Vector *to, void *user)
+{
+  auto *m = reinterpret_cast<OutlineMapper *>(user);
+  m->sink->line_to(m->map(to));
+  return 0;
+}
+
+int sink_conic_to(const FT_Vector *c, const FT_Vector *to, void *user)
+{
+  auto *m = reinterpret_cast<OutlineMapper *>(user);
+  m->sink->conic_to(m->map(c), m->map(to));
+  return 0;
+}
+
+int sink_cubic_to(const FT_Vector *c1, const FT_Vector *c2, const FT_Vector *to, void *user)
+{
+  auto *m = reinterpret_cast<OutlineMapper *>(user);
+  m->sink->cubic_to(m->map(c1), m->map(c2), m->map(to));
+  return 0;
+}
+
+}  // namespace
+
+bool FreetypeRenderer::outlines(const FreetypeRenderer::Params& params, OutlineSink& sink) const
+{
+  ShapeResults sr(params);
+  if (!sr.ok) return false;
+
+  FT_Outline_Funcs sinkFuncs;
+  sinkFuncs.move_to = sink_move_to;
+  sinkFuncs.line_to = sink_line_to;
+  sinkFuncs.conic_to = sink_conic_to;
+  sinkFuncs.cubic_to = sink_cubic_to;
+  sinkFuncs.delta = 0;
+  sinkFuncs.shift = 0;
+
+  Vector2d advance(0, 0);
+  for (const auto& glyph : sr.glyph_array) {
+    OutlineMapper mapper{&sink, params.size, scale, Vector2d(sr.x_offset + glyph.get_x_offset(), sr.y_offset + glyph.get_y_offset()) + advance};
+    FT_Outline outline = reinterpret_cast<FT_OutlineGlyph>(glyph.get_glyph())->outline;
+    FT_Outline_Decompose(&outline, &sinkFuncs, &mapper);
+    advance += Vector2d(glyph.get_x_advance() * params.spacing, glyph.get_y_advance() * params.spacing);
+  }
+  return true;
+}
+
 std::vector<std::shared_ptr<const Polygon2d>> FreetypeRenderer::render(const FreetypeRenderer::Params& params) const
 {
   ShapeResults sr(params);

@@ -560,9 +560,18 @@ primary
             {
               $$ = new Vector(LOCD("vector", @$));
             }
-        | '[' vector_elements optional_trailing_comma ']'
+        | '[' vector_elements ']'
             {
               $$ = $2;
+            }
+        | '[' vector_elements commas ']'
+            {
+              $$ = $2;
+            }
+        | '[' commas ']'
+            {
+              // Forgent3D: [,] — OpenSCAD 2021.01 and before read stray commas as nothing (see commas)
+              $$ = new Vector(LOCD("vector", @$));
             }
 		;
 
@@ -619,9 +628,13 @@ list_comprehension_elements_p
             }
         ;
 
-optional_trailing_comma
-        : /* empty */
-        | ','
+/* Forgent3D: a run of commas where one comma (or none, at the end) is expected — [a,,b], f(a,,b,),
+   module m(a,,b). OpenSCAD 2021.01 and before accepted it and read the extra commas as nothing
+   (optional_commas, removed upstream in 7099bed4f); most Thingiverse files that no longer parse were
+   written that way. Every file the stricter grammar accepts parses exactly as before. */
+commas
+        : ','
+        | commas ','
         ;
 
 vector_elements
@@ -630,7 +643,7 @@ vector_elements
               $$ = new Vector(LOCD("vector", @$));
               $$->emplace_back($1);
             }
-        | vector_elements ',' vector_element
+        | vector_elements commas vector_element
             {
               $$ = $1;
               $$->emplace_back($3);
@@ -647,7 +660,8 @@ parameters
             {
                 $$ = new AssignmentList();
             }
-        | parameter_list optional_trailing_comma
+        | parameter_list
+        | parameter_list commas
         ;
 
 parameter_list
@@ -656,7 +670,7 @@ parameter_list
                 $$ = new AssignmentList();
                 $$->emplace_back($1);
             }
-        | parameter_list ',' parameter
+        | parameter_list commas parameter
             {
                 $$ = $1;
                 $$->emplace_back($3);
@@ -681,7 +695,8 @@ arguments
             {
                 $$ = new AssignmentList();
             }
-        | argument_list optional_trailing_comma
+        | argument_list
+        | argument_list commas
         ;
 
 argument_list
@@ -690,7 +705,7 @@ argument_list
                 $$ = new AssignmentList();
                 $$->emplace_back($1);
             }
-        | argument_list ',' argument
+        | argument_list commas argument
             {
                 $$ = $1;
                 $$->emplace_back($3);

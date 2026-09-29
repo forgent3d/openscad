@@ -153,7 +153,9 @@ static std::shared_ptr<AbstractNode> builtin_children(const ModuleInstantiation 
 
 static std::shared_ptr<AbstractNode> builtin_echo(const ModuleInstantiation *inst, Arguments arguments, const Children& children)
 {
+  message_origin = &inst->location();
   LOG(message_group::Echo, "%1$s", STR(arguments));
+  message_origin = nullptr;
 
   auto node = children.instantiate(lazyUnionNode(inst));
   // echo without child geometries should not count as valid CSGNode

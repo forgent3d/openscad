@@ -155,12 +155,21 @@ if (CMAKE_SYSTEM_NAME STREQUAL Emscripten)
   
   # https://emscripten.org/docs/tools_reference/emcc.html
   # https://emscripten.org/docs/tools_reference/settings_reference.html
-  target_compile_options(OpenSCAD PRIVATE -fexceptions)
+  if (WASM_BUILD_TYPE STREQUAL "forgent")
+    # Forgent3D: native Wasm exceptions and longjmp instead of emscripten's JS emulation, which routes every
+    # call inside a try region through a JS invoke_* trampoline — ~10 KB of the engine's native stack per
+    # module call level, so module recursion died at ~100 levels in V8's ~1 MB stack. Every C++ library
+    # linked in must be built the same way (the sysroot's boost, freetype, gmpxx were rebuilt; lib3mf is
+    # left out with CMAKE_DISABLE_FIND_PACKAGE_Lib3MF).
+    set(OPENSCAD_WASM_EH -fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
+  else()
+    set(OPENSCAD_WASM_EH -fexceptions -sDISABLE_EXCEPTION_CATCHING=0)
+  endif()
+  target_compile_options(OpenSCAD PRIVATE ${OPENSCAD_WASM_EH})
   target_link_options(OpenSCAD PUBLIC
-    -fexceptions
+    ${OPENSCAD_WASM_EH}
     -sABORT_ON_WASM_EXCEPTIONS
     -sALLOW_MEMORY_GROWTH=1
-    -sDISABLE_EXCEPTION_CATCHING=0
     -sEXIT_RUNTIME=1
     -sEXPORTED_RUNTIME_METHODS=['ENV','ERRNO_CODES','FS','PATH','callMain']
     -sMAXIMUM_MEMORY=4GB
@@ -201,8 +210,20 @@ if (CMAKE_SYSTEM_NAME STREQUAL Emscripten)
       POST_BUILD TARGET OpenSCAD
       COMMAND ${CMAKE_COMMAND} "-DFILE=$<TARGET_FILE:OpenSCAD>" -P "${CMAKE_CURRENT_BINARY_DIR}/prepend_node_shebang.cmake"
     )
+  elseif (WASM_BUILD_TYPE STREQUAL "forgent")
+    # Forgent3D: one ES module for the browser's worker and for node scripts alike (MEMFS in both, no
+    # NODERAWFS), and a real stack: emscripten's default is 64 KB while StackCheck assumes STACKSIZE, so
+    # recursion ran off the end of the stack ("memory access out of bounds") long before OpenSCAD's own
+    # "Recursion detected" could fire.
+    target_link_options(OpenSCAD PUBLIC
+      -sENVIRONMENT=web,worker,node
+      -sEXPORT_ES6=1
+      -sEXPORT_NAME=OpenSCAD
+      -sMODULARIZE=1
+      -sSTACK_SIZE=${STACKSIZE}
+    )
   else()
-    message(FATAL_ERROR "Invalid WASM_BUILD_TYPE: ${WASM_BUILD_TYPE} (allowed: node, web)")
+    message(FATAL_ERROR "Invalid WASM_BUILD_TYPE: ${WASM_BUILD_TYPE} (allowed: node, web, forgent)")
   endif()
 endif()
 
@@ -873,6 +894,7 @@ set(CORE_SOURCES
   src/io/export_pov.cc
   src/io/export_param.cc
   src/io/export_wrl.cc
+  src/io/export_fgjson.cc
   src/io/fileutils.cc
   src/io/import_amf.cc
   src/io/import_json.cc
@@ -901,6 +923,7 @@ set(CORE_SOURCES
   src/utils/StackCheck.h
   src/utils/calc.cc
   src/utils/degree_trig.cc
+  src/utils/full_precision.cc
   src/utils/hash.cc
   src/utils/printutils.cc
   src/utils/svg.cc

@@ -94,3 +94,8 @@ tests/data/svg/viewbox/viewbox_*.svg
 tests/regression/pdfexporttest/centered.pdf
 tests/regression/pdfexporttest/simple-pdf.pdf
 scripts/run-clang-tidy-cached
+
+# Forgent3D builds (forgent3d/README.md)
+/build-native/
+/build-wasm-slim/
+/build-wasm-full/

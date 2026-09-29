@@ -32,6 +32,7 @@
 
 #include "core/AST.h"
 #include "core/Parameters.h"
+#include "geometry/linalg.h"
 #include "FontCache.h"
 #include <hb.h>
 #include <ft2build.h>
@@ -119,6 +120,7 @@ private:
     [[nodiscard]] hb_direction_t detect_direction(const hb_script_t script) const;
 
     friend class FreetypeRenderer;
+    friend class FgjsonWriter;  // Forgent3D: io/export_fgjson.cc
   };
 
   class TextMetrics
@@ -160,6 +162,21 @@ public:
   virtual ~FreetypeRenderer() = default;
 
   [[nodiscard]] std::vector<std::shared_ptr<const class Polygon2d>> render(const FreetypeRenderer::Params& params) const;
+
+  /*! Forgent3D (io/export_fgjson.cc): each glyph outline segment by segment, exactly as FreeType has it —
+      lines, quadratic and cubic Béziers — in final coordinates, laid out exactly as render() lays it out.
+      render() flattens every curve into $fn straight pieces (DrawingCallback); an exact consumer wants the curves. */
+  class OutlineSink
+  {
+public:
+    virtual ~OutlineSink() = default;
+    virtual void move_to(const Vector2d& to) = 0;
+    virtual void line_to(const Vector2d& to) = 0;
+    virtual void conic_to(const Vector2d& c, const Vector2d& to) = 0;
+    virtual void cubic_to(const Vector2d& c1, const Vector2d& c2, const Vector2d& to) = 0;
+  };
+  /*! false when the text cannot be shaped (no font); the log says why. */
+  bool outlines(const FreetypeRenderer::Params& params, OutlineSink& sink) const;
 private:
   const static double scale;
   FT_Outline_Funcs funcs;
