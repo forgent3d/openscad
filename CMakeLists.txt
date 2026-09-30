@@ -151,6 +151,9 @@ if (CMAKE_SYSTEM_NAME STREQUAL Emscripten)
   set(USE_MIMALLOC OFF CACHE BOOL "" FORCE)
   set(ENV{PKG_CONFIG_PATH} "/emsdk/upstream/emscripten/cache/sysroot/lib/pkgconfig")
   target_compile_definitions(OpenSCAD PRIVATE CGAL_DISABLE_ROUNDING_MATH_CHECK)
+  # wasm cannot switch the FPU rounding mode, which CGAL's interval filters rely on: without this their "certain"
+  # answers are wrong and the render asserts or comes out with the wrong volume (applyHull, Nef booleans)
+  target_compile_definitions(OpenSCAD PRIVATE CGAL_ALWAYS_ROUND_TO_NEAREST)
   target_link_libraries(OpenSCAD PRIVATE /emsdk/upstream/emscripten/cache/sysroot/lib/libz.a)
   
   # https://emscripten.org/docs/tools_reference/emcc.html
