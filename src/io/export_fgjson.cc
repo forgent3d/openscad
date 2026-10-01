@@ -66,6 +66,12 @@
 #include "geometry/Polygon2d.h"
 #include "geometry/PolySet.h"
 #include "geometry/PolySetUtils.h"
+#ifdef ENABLE_MANIFOLD
+#include "geometry/manifold/ManifoldGeometry.h"
+#include "geometry/manifold/manifoldutils.h"
+#endif
+
+#include <map>
 
 namespace {
 
@@ -260,7 +266,15 @@ private:
     }
     out << "}";
 
-    if (mesh && tree && wantsRender(node)) rendered(node);
+    if (mesh && tree && wantsRender(node)) {
+      // What OpenSCAD says while rendering a fallback (an unclosed polyhedron's "Input mesh is not closed!")
+      // is what it says in its own render, which carries on: a warning here, not an error that fails the export.
+      const auto from = logged.size();
+      rendered(node);
+      for (auto k = from; k < logged.size(); ++k) {
+        if (logged[k].message.group == message_group::Error) logged[k].message.group = message_group::Warning;
+      }
+    }
 
     if (!node.getChildren().empty()) {
       out << ",\"children\":[";
@@ -274,16 +288,44 @@ private:
   /**
    * The nodes that only a render can answer: files read as meshes or drawings (import, surface), and the
    * operations whose result is not a simple function of their children's exact shapes (projection without cut,
-   * roof, a chamfered offset). The consumer decides whether it uses the render (Write.scad's DXF fonts it builds
-   * exactly); the render costs nothing where the file is small, and only this option asks for it.
+   * roof). Every offset, too: the consumer's exact offset (OCCT) gives up on outlines Clipper takes, and keeps
+   * this as its fallback. And a polyhedron that is not a closed surface as written: OpenSCAD repairs it or drops
+   * it when it meets a boolean, and the consumer, which sews the faces as written, takes that answer. The consumer
+   * decides whether it uses the render (Write.scad's DXF fonts it builds exactly); only this option asks for it.
    */
   static bool wantsRender(const AbstractNode& node)
   {
     const auto name = node.name();
-    if (name == "import" || name == "surface" || name == "roof") return true;
+    if (name == "import" || name == "surface" || name == "roof" || name == "offset") return true;
     if (const auto *n = dynamic_cast<const ProjectionNode *>(&node)) return !n->cut_mode;
-    if (const auto *n = dynamic_cast<const OffsetNode *>(&node)) return n->chamfer;
+    if (const auto *n = dynamic_cast<const PolyhedronNode *>(&node)) return !closedAsWritten(*n);
     return false;
+  }
+
+  /**
+   * Every face has three distinct corners and every edge is used once each way: a closed, consistently wound
+   * surface, which the consumer sews as written. The same test as transpile.ts `closedAsWritten` — it decides
+   * whether to ask for renders at all.
+   */
+  static bool closedAsWritten(const PolyhedronNode& n)
+  {
+    std::map<std::pair<int, int>, int> used;
+    for (const auto& face : n.faces) {
+      std::vector<int> f;
+      for (const int i : face) {
+        if (i < 0 || i >= static_cast<int>(n.points.size())) return false;
+        if (f.empty() || f.back() != i) f.push_back(i);
+      }
+      if (f.size() > 1 && f.front() == f.back()) f.pop_back();
+      if (f.size() < 3) return false;
+      for (size_t k = 0; k < f.size(); ++k) {
+        if (++used[{f[k], f[(k + 1) % f.size()]}] > 1) return false;
+      }
+    }
+    for (const auto& [edge, count] : used) {
+      if (!used.count({edge.second, edge.first})) return false;
+    }
+    return true;
   }
 
   /** `"rendered": {"dim": 3, "points", "faces"}` / `{"dim": 2, "points", "paths"}` — OpenSCAD's own render of `node`. */
@@ -291,11 +333,24 @@ private:
   {
 #if defined(ENABLE_CGAL) || defined(ENABLE_MANIFOLD)
     GeometryEvaluator evaluator(*tree);
-    const auto geom = evaluator.evaluateGeometry(node, false);
+    auto geom = evaluator.evaluateGeometry(node, false);
     if (!geom || geom->isEmpty()) {
       out << ",\"rendered\":null";
       return;
     }
+#ifdef ENABLE_MANIFOLD
+    // A polyhedron as it enters a boolean: converted to a manifold, repaired if it can be, dropped if not —
+    // null is OpenSCAD dropping it ("Input mesh is not closed!").
+    if (dynamic_cast<const PolyhedronNode *>(&node)) {
+      const auto ps = PolySetUtils::getGeometryAsPolySet(geom);
+      const auto manifold = ps ? ManifoldUtils::createManifoldFromPolySet(*ps) : nullptr;
+      if (!manifold || manifold->isEmpty()) {
+        out << ",\"rendered\":null";
+        return;
+      }
+      geom = manifold;
+    }
+#endif
     if (const auto poly = std::dynamic_pointer_cast<const Polygon2d>(geom)) {
       std::string points = "[", paths = "[";
       size_t base = 0;
