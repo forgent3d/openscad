@@ -18,13 +18,16 @@
  *
  * Shape:
  *   { "format": "forgent3d-openscad-tree", "version": 1,
- *     "tree": [node…], "params": {…}, "log": [{"group", "text", "at"?}…], "csg"?: "…",
+ *     "tree": [node…], "aborted"?: true, "params": {…}, "log": [{"group", "text", "at"?}…], "csg"?: "…",
  *     "files": ["/project/model.scad", …] }
  *   node = { "node": "cube", "modifier"?: "%"|"#", "module"?: "name" | "call"?: "translate",
  *            "at"?: [file index, first line, first column, last line, last column],
  *            "args": {…}, "children"?: [node…] }
  * Non-finite numbers are the strings "inf", "-inf", "nan" (JSON has no such numbers). ListNode and the
  * root are not nodes: their children are spliced into the parent's list, as the .csg does.
+ * "aborted": evaluation stopped at an exception (a failed assert(), recursion…) — the tree is what came
+ * before it, which OpenSCAD renders as if it were the model. Without it, every ERROR in the log was one
+ * OpenSCAD logged and went on past (polygon(points = undef) is an empty polygon).
  */
 
 #include "io/export.h"
@@ -596,7 +599,7 @@ void fgjson_collect_messages()
 }
 
 void export_fgjson(const Tree& tree, const AbstractNode& root, SourceFile *root_file, const fs::path& path,
-                   const std::unordered_map<std::string, std::string>& options, std::ostream& out)
+                   const std::unordered_map<std::string, std::string>& options, bool aborted, std::ostream& out)
 {
   FullPrecisionScope full;
   const auto meshOption = options.find("mesh");
@@ -605,6 +608,7 @@ void export_fgjson(const Tree& tree, const AbstractNode& root, SourceFile *root_
   bool first = true;
   writer.list(root, false, false, first);
   out << "],";
+  if (aborted) out << "\"aborted\":true,";
 
   std::ostringstream params;
   export_param(root_file, path, params);

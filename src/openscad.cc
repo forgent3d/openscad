@@ -404,6 +404,7 @@ int do_export(const CommandLine& cmd, const RenderVariables& render_variables, F
   AbstractNode::resetIndexCounter();
   std::shared_ptr<const FileContext> file_context;
   std::shared_ptr<AbstractNode> absolute_root_node;
+  bool evaluation_aborted = false; // Forgent3D: SourceFile::instantiate swallows the exception, keeps what came before
 
 #ifdef ENABLE_PYTHON    
   if(python_result_node != NULL && python_active) {
@@ -411,6 +412,7 @@ int do_export(const CommandLine& cmd, const RenderVariables& render_variables, F
   } else {
 #endif	    
   absolute_root_node = root_file->instantiate(*builtin_context, &file_context);
+  evaluation_aborted = !file_context;
 #ifdef ENABLE_PYTHON
   }
 #endif
@@ -452,7 +454,7 @@ int do_export(const CommandLine& cmd, const RenderVariables& render_variables, F
     const auto output = fs::absolute(fs::path(filename_str)).generic_string(); // before the chdir below
     fs::current_path(fparent); // the embedded .csg, like the CSG export: import() paths relative to the document
     with_output(cmd.is_stdout, output, [&](std::ostream& stream) {
-      export_fgjson(tree, *root_node, root_file, fpath, options, stream);
+      export_fgjson(tree, *root_node, root_file, fpath, options, evaluation_aborted, stream);
     });
     fs::current_path(cmd.original_path);
   } else if (export_format == FileFormat::AST) {

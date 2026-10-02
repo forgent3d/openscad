@@ -271,7 +271,7 @@ bool export_param(SourceFile *root, const fs::path& path, std::ostream& output);
 // fgjson_collect_messages() before parsing, so the log has every message of the run.
 void fgjson_collect_messages();
 void export_fgjson(const Tree& tree, const AbstractNode& root, SourceFile *root_file, const fs::path& path,
-                   const std::unordered_map<std::string, std::string>& options, std::ostream& output);
+                   const std::unordered_map<std::string, std::string>& options, bool aborted, std::ostream& output);
 void export_fgjson_failed(std::ostream& output);
 
 std::unique_ptr<PolySet> createSortedPolySet(const PolySet& ps);
