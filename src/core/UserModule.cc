@@ -109,7 +109,7 @@ std::shared_ptr<AbstractNode> UserModule::instantiate(const std::shared_ptr<cons
   std::shared_ptr<AbstractNode> ret;
   try{
     std::shared_ptr<AbstractNode> group = scoped
-      ? std::shared_ptr<AbstractNode>(std::make_shared<ScopedGroupNode>(inst, std::string("module ") + this->name, fgjson_module_scope(*this, **module_context, specials)))
+      ? std::shared_ptr<AbstractNode>(std::make_shared<ScopedGroupNode>(inst, std::string("module ") + this->name, fgjson_module_scope(*this, **module_context, specials), this->location()))
       : std::make_shared<GroupNode>(inst, std::string("module ") + this->name);
     ret = this->body.instantiateModules(*module_context, group);
   } catch (EvaluationException& e) {

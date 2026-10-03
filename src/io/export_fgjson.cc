@@ -22,12 +22,13 @@
  *     "files": ["/project/model.scad", …] }
  *   node = { "node": "cube", "modifier"?: "%"|"#", "module"?: "name" | "call"?: "translate",
  *            "at"?: [file index, first line, first column, last line, last column],
- *            "scope"?: {name: value…}, "specials"?: {"$fn", "$fa", "$fs"},
+ *            "defined"?: [file index, …], "scope"?: {name: value…}, "specials"?: {"$fn", "$fa", "$fs"},
  *            "args": {…}, "children"?: [node…] }
  * Non-finite numbers are the strings "inf", "-inf", "nan" (JSON has no such numbers). ListNode and the
  * root are not nodes: their children are spliced into the parent's list, as the .csg does.
  * "scope" / "specials" (`-O fgjson/scope=name,name…`, `all` for every user module): a user module's group
- * carries what the module saw — its parameters after defaults, overwritten by the body's top-level
+ * carries where the module is defined ("defined", the `at` of its definition) and what it saw — its
+ * parameters after defaults, overwritten by the body's top-level
  * assignments, and `$fn`/`$fa`/`$fs` as they were at the call (core/FgjsonScope.h). Inside a scope undef is
  * null, a non-finite number {"nonfinite": "inf"}, a range {"range": [begin, step, end]}, a function or object
  * {"function": true} / {"object": true}, a list past the budget (20000 scalars a module) {"omitted": size}.
@@ -397,7 +398,11 @@ private:
     }
     const auto where = at(node.modinst->location());
     if (!where.empty()) out << ",\"at\":" << where;
-    if (const auto *scoped = dynamic_cast<const ScopedGroupNode *>(&node)) out << "," << scoped->scope;
+    if (const auto *scoped = dynamic_cast<const ScopedGroupNode *>(&node)) {
+      const auto defined = at(scoped->defined);
+      if (!defined.empty()) out << ",\"defined\":" << defined;
+      out << "," << scoped->scope;
+    }
 
     args.clear();
     collectArgs(node);

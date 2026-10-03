@@ -14,18 +14,24 @@
 #include <string>
 #include <utility>
 
+#include "core/AST.h"
 #include "core/node.h"
 
 class Arguments;
 class Context;
 class UserModule;
 
-/** A user module's group, carrying its scope as JSON members (`"scope":{…},"specials":{…}`). */
+/**
+ * A user module's group, carrying its scope as JSON members (`"scope":{…},"specials":{…}`) and where the module is
+ * defined (`"defined"`: a file of the consumer's own module named `cuboid` is not BOSL2's).
+ */
 class ScopedGroupNode : public GroupNode
 {
 public:
-  ScopedGroupNode(const ModuleInstantiation *mi, std::string name, std::string scope) : GroupNode(mi, std::move(name)), scope(std::move(scope)) {}
+  ScopedGroupNode(const ModuleInstantiation *mi, std::string name, std::string scope, Location defined)
+    : GroupNode(mi, std::move(name)), scope(std::move(scope)), defined(std::move(defined)) {}
   const std::string scope;
+  const Location defined;
 };
 
 /** Whether `-O fgjson/scope=…` asked for this module's scope. */
