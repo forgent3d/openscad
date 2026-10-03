@@ -22,9 +22,15 @@
  *     "files": ["/project/model.scad", …] }
  *   node = { "node": "cube", "modifier"?: "%"|"#", "module"?: "name" | "call"?: "translate",
  *            "at"?: [file index, first line, first column, last line, last column],
+ *            "scope"?: {name: value…}, "specials"?: {"$fn", "$fa", "$fs"},
  *            "args": {…}, "children"?: [node…] }
  * Non-finite numbers are the strings "inf", "-inf", "nan" (JSON has no such numbers). ListNode and the
  * root are not nodes: their children are spliced into the parent's list, as the .csg does.
+ * "scope" / "specials" (`-O fgjson/scope=name,name…`, `all` for every user module): a user module's group
+ * carries what the module saw — its parameters after defaults, overwritten by the body's top-level
+ * assignments, and `$fn`/`$fa`/`$fs` as they were at the call (core/FgjsonScope.h). Inside a scope undef is
+ * null, a non-finite number {"nonfinite": "inf"}, a range {"range": [begin, step, end]}, a function or object
+ * {"function": true} / {"object": true}, a list past the budget (20000 scalars a module) {"omitted": size}.
  * "aborted": evaluation stopped at an exception (a failed assert(), recursion…) — the tree is what came
  * before it, which OpenSCAD renders as if it were the model. Without it, every ERROR in the log was one
  * OpenSCAD logged and went on past (polygon(points = undef) is an empty polygon).
@@ -40,10 +46,16 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "core/AST.h"
+#include "core/Arguments.h"
+#include "core/Context.h"
+#include "core/FgjsonScope.h"
+#include "core/UserModule.h"
+#include "core/Value.h"
 #include "core/CgalAdvNode.h"
 #include "core/ColorNode.h"
 #include "core/CsgOpNode.h"
@@ -193,7 +205,133 @@ private:
   }
 };
 
+/** `-O fgjson/scope=…`: the modules whose scope is exported; `all` = every user module. Empty = none (the default). */
+std::unordered_set<std::string> scopeModules;
+bool scopeAll = false;
+
+/** Past this many numbers/strings in one module's scope the rest is left out: a VNF handed to a module is no knob. */
+constexpr size_t SCOPE_BUDGET = 20000;
+
+/**
+ * A value as JSON, within `budget` scalars: undef → null; a non-finite number → {"nonfinite": "inf"} (a scope
+ * holds real strings, so the bare-string convention of node arguments would be ambiguous here); a range →
+ * {"range": [begin, step, end]}; a function or an object → {"function": true} / {"object": true}; a list past the
+ * budget → {"omitted": size}.
+ */
+void scopeValue(std::string& out, const Value& value, size_t& budget)
+{
+  switch (value.type()) {
+  case Value::Type::UNDEFINED: out += "null"; break;
+  case Value::Type::BOOL: out += value.toBool() ? "true" : "false"; break;
+  case Value::Type::NUMBER: {
+    const double v = value.toDouble();
+    out += std::isfinite(v) ? shortest_double(v) : "{\"nonfinite\":" + quote(shortest_double(v)) + "}";
+    if (budget) --budget;
+    break;
+  }
+  case Value::Type::STRING: {
+    const auto& text = value.toStrUtf8Wrapper().toString();
+    out += quote(text.size() > 4096 ? text.substr(0, 4096) : text);
+    if (budget) --budget;
+    break;
+  }
+  case Value::Type::VECTOR:
+  case Value::Type::EMBEDDED_VECTOR: {
+    const auto& v = value.toVector();
+    if (v.size() > budget) {
+      out += "{\"omitted\":" + std::to_string(v.size()) + "}";
+      break;
+    }
+    out += "[";
+    bool first = true;
+    for (const auto& item : v) {
+      if (!first) out += ",";
+      first = false;
+      scopeValue(out, item, budget);
+    }
+    out += "]";
+    break;
+  }
+  case Value::Type::RANGE: {
+    const auto& r = value.toRange();
+    out += "{\"range\":" + vec({r.begin_value(), r.step_value(), r.end_value()}) + "}";
+    break;
+  }
+  case Value::Type::FUNCTION: out += "{\"function\":true}"; break;
+  case Value::Type::OBJECT: out += "{\"object\":true}"; break;
+  }
+}
+
 }  // namespace
+
+void fgjson_scope_modules(const std::string& list)
+{
+  scopeModules.clear();
+  scopeAll = false;
+  std::string name;
+  for (const char c : list + ",") {
+    if (c != ',') {
+      name += c;
+      continue;
+    }
+    if (name == "all") scopeAll = true;
+    else if (!name.empty()) scopeModules.insert(name);
+    name.clear();
+  }
+}
+
+bool fgjson_scope_wanted(const std::string& module)
+{
+  return scopeAll || (!scopeModules.empty() && scopeModules.count(module) > 0);
+}
+
+std::string fgjson_call_specials(const Arguments& call, const std::shared_ptr<const Context>& caller)
+{
+  std::string out = "\"specials\":{";
+  bool first = true;
+  size_t budget = 3;
+  for (const char *name : {"$fn", "$fa", "$fs"}) {
+    const Value *found = nullptr;
+    for (const auto& argument : call) {
+      if (argument.name && *argument.name == name) found = &argument.value;
+    }
+    boost::optional<const Value&> inherited;
+    if (!found) inherited = caller->try_lookup_variable(name);
+    if (!found && !inherited) continue;
+    if (!first) out += ",";
+    first = false;
+    out += quote(name) + ":";
+    scopeValue(out, found ? *found : *inherited, budget);
+  }
+  return out + "}";
+}
+
+std::string fgjson_module_scope(const UserModule& module, const Context& context, const std::string& specials)
+{
+  // parameters in declaration order, then the body's top-level assignments; a name assigned in the body is the
+  // body's value (BOSL2 normalises `edges = _edges(edges, …)` there), listed once
+  std::vector<std::string> names;
+  std::unordered_set<std::string> seen;
+  for (const auto& parameter : module.parameters) {
+    if (seen.insert(parameter->getName()).second) names.push_back(parameter->getName());
+  }
+  for (const auto& assignment : module.body.assignments) {
+    if (seen.insert(assignment->getName()).second) names.push_back(assignment->getName());
+  }
+  std::string out = "\"scope\":{";
+  bool first = true;
+  size_t budget = SCOPE_BUDGET;
+  for (const auto& name : names) {
+    if (name.empty() || name[0] == '$') continue;
+    const auto value = context.lookup_local_variable(name);
+    if (!value) continue;
+    if (!first) out += ",";
+    first = false;
+    out += quote(name) + ":";
+    scopeValue(out, *value, budget);
+  }
+  return out + "}," + specials;
+}
 
 /** Not in the anonymous namespace: FreetypeRenderer::Params befriends it by name to read text()'s parameters. */
 class FgjsonWriter
@@ -259,6 +397,7 @@ private:
     }
     const auto where = at(node.modinst->location());
     if (!where.empty()) out << ",\"at\":" << where;
+    if (const auto *scoped = dynamic_cast<const ScopedGroupNode *>(&node)) out << "," << scoped->scope;
 
     args.clear();
     collectArgs(node);

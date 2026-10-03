@@ -37,6 +37,8 @@
 #include "utils/StackCheck.h"
 #include "core/ScopeContext.h"
 #include "core/Expression.h"
+#include "core/Arguments.h"
+#include "core/FgjsonScope.h"
 #include "utils/printutils.h"
 #include "utils/compiler_specific.h"
 #include <cstddef>
@@ -88,11 +90,15 @@ std::shared_ptr<AbstractNode> UserModule::instantiate(const std::shared_ptr<cons
   }
 
   StaticModuleNameStack name{inst->name()}; // push on static stack, pop at end of method!
+  Arguments arguments(inst->arguments, context);
+  // Forgent3D (core/FgjsonScope.h): the specials as the call sees them, before the module's own frame exists
+  const bool scoped = fgjson_scope_wanted(this->name);
+  const std::string specials = scoped ? fgjson_call_specials(arguments, context) : std::string();
   ContextHandle<UserModuleContext> module_context{Context::create<UserModuleContext>(
                                                     defining_context,
                                                     this,
                                                     inst->location(),
-                                                    Arguments(inst->arguments, context),
+                                                    std::move(arguments),
                                                     Children(&inst->scope, context)
                                                     )};
 #if 0 && DEBUG
@@ -102,7 +108,10 @@ std::shared_ptr<AbstractNode> UserModule::instantiate(const std::shared_ptr<cons
 
   std::shared_ptr<AbstractNode> ret;
   try{
-    ret = this->body.instantiateModules(*module_context, std::make_shared<GroupNode>(inst, std::string("module ") + this->name));
+    std::shared_ptr<AbstractNode> group = scoped
+      ? std::shared_ptr<AbstractNode>(std::make_shared<ScopedGroupNode>(inst, std::string("module ") + this->name, fgjson_module_scope(*this, **module_context, specials)))
+      : std::make_shared<GroupNode>(inst, std::string("module ") + this->name);
+    ret = this->body.instantiateModules(*module_context, group);
   } catch (EvaluationException& e) {
     if (OpenSCAD::traceUsermoduleParameters && e.traceDepth > 0) {
       print_trace(this, *module_context, this->parameters);

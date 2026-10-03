@@ -576,7 +576,16 @@ int cmdline(const CommandLine& cmd)
     echostream.reset(cmd.is_stdout ? new Echostream(std::cout) : new Echostream(cmd.output_file));
   }
 
-  if (export_format == FileFormat::FGJSON) fgjson_collect_messages();
+  if (export_format == FileFormat::FGJSON) {
+    fgjson_collect_messages();
+    const auto options = cmd.exportOptions.find("fgjson");
+    std::string scope;
+    if (options != cmd.exportOptions.end()) {
+      const auto found = options->second.find("scope");
+      if (found != options->second.end()) scope = found->second;
+    }
+    fgjson_scope_modules(scope);
+  }
   // Forgent3D: a run that stops before evaluation still writes its .fgjson — the log says why
   const auto fgjson_failed = [&]() {
     if (export_format != FileFormat::FGJSON) return;

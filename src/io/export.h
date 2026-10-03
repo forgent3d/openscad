@@ -270,6 +270,9 @@ bool export_param(SourceFile *root, const fs::path& path, std::ostream& output);
 // Forgent3D (export_fgjson.cc): the evaluated node tree as JSON, full precision, with source locations.
 // fgjson_collect_messages() before parsing, so the log has every message of the run.
 void fgjson_collect_messages();
+// `-O fgjson/scope=name,name…` (`all`: every user module): those modules' groups carry their evaluated scope
+// (core/FgjsonScope.h). Set before evaluation.
+void fgjson_scope_modules(const std::string& list);
 void export_fgjson(const Tree& tree, const AbstractNode& root, SourceFile *root_file, const fs::path& path,
                    const std::unordered_map<std::string, std::string>& options, bool aborted, std::ostream& output);
 void export_fgjson_failed(std::ostream& output);
