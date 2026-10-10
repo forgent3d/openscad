@@ -450,8 +450,9 @@ int do_export(const CommandLine& cmd, const RenderVariables& render_variables, F
     fs::current_path(cmd.original_path);
   } else if (export_format == FileFormat::FGJSON) {
     const auto found = cmd.exportOptions.find("fgjson");
-    const std::unordered_map<std::string, std::string> options = found == cmd.exportOptions.end() ? std::unordered_map<std::string, std::string>{} : found->second;
+    std::unordered_map<std::string, std::string> options = found == cmd.exportOptions.end() ? std::unordered_map<std::string, std::string>{} : found->second;
     const auto output = fs::absolute(fs::path(filename_str)).generic_string(); // before the chdir below
+    options["output"] = output; // the preview sidecar sits next to the output, not next to the document
     fs::current_path(fparent); // the embedded .csg, like the CSG export: import() paths relative to the document
     with_output(cmd.is_stdout, output, [&](std::ostream& stream) {
       export_fgjson(tree, *root_node, root_file, fpath, options, evaluation_aborted, stream);
@@ -653,11 +654,19 @@ int cmdline(const CommandLine& cmd)
 
   root_file->handleDependencies();
 
+  // Forgent3D: `-O fgjson/preview=true` renders what the GUI's F5 shows, so the model sees $preview = true too
+  const auto fgjson_preview = [&]() {
+    if (export_format != FileFormat::FGJSON) return false;
+    const auto options = cmd.exportOptions.find("fgjson");
+    if (options == cmd.exportOptions.end()) return false;
+    const auto found = options->second.find("preview");
+    return found != options->second.end() && (found->second == "true" || found->second == "1");
+  };
   RenderVariables render_variables = {
     .preview = fileformat::canPreview(export_format)
       ? (cmd.viewOptions.renderer == RenderType::OPENCSG
         || cmd.viewOptions.renderer == RenderType::THROWNTOGETHER)
-      : false,
+      : fgjson_preview(),
     .camera = cmd.camera,
   };
 

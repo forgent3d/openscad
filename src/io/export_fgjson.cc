@@ -35,6 +35,14 @@
  * "aborted": evaluation stopped at an exception (a failed assert(), recursion…) — the tree is what came
  * before it, which OpenSCAD renders as if it were the model. Without it, every ERROR in the log was one
  * OpenSCAD logged and went on past (polygon(points = undef) is an empty polygon).
+ *
+ * `-O fgjson/preview=true` (full build): OpenSCAD's own render of the whole model, as the GUI's F5 shows it, in a
+ * binary sidecar `<out>.preview` (format in `writePreview`): the root's geometry with its face colours — `color()`
+ * carried through the booleans by Manifold, the colour scheme's face colour where there is none, its back-face
+ * colour on faces that came from a subtracted object — plus each `%` subtree (which the render leaves out) and each
+ * `#` subtree (rendered, and drawn again translucent) as its own mesh, in world coordinates. The JSON says
+ * `"preview": {"meshes", "triangles"}`, or `"preview": null` when this build cannot render. Consumer:
+ * packages/cloud/lib/scad-preview.ts in forgent3d-platform.
  */
 
 #include "io/export.h"
@@ -42,6 +50,9 @@
 #include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <memory>
 #include <ostream>
 #include <sstream>
@@ -338,20 +349,33 @@ std::string fgjson_module_scope(const UserModule& module, const Context& context
 class FgjsonWriter
 {
 public:
-  explicit FgjsonWriter(std::ostream& out, const Tree *tree = nullptr, bool mesh = false) : out(out), tree(tree), mesh(mesh) {}
+  explicit FgjsonWriter(std::ostream& out, const Tree *tree = nullptr, bool mesh = false, bool preview = false)
+    : out(out), tree(tree), mesh(mesh), preview(preview) {}
+
+  /** A `%` or `#` subtree the preview draws on its own: the outermost node that carries the modifier, and where it sits. */
+  struct Extra {
+    const AbstractNode *node;
+    Transform3d world;
+    bool background;
+  };
+  std::vector<Extra> extras;
 
   /** A node list: `nodes` spliced through ListNode/RootNode, each written as one JSON object. */
-  void list(const AbstractNode& node, bool background, bool highlight, bool& first)
+  void list(const AbstractNode& node, bool background, bool highlight, bool& first, const Transform3d& world = Transform3d::Identity())
   {
+    // the preview wants the outermost modified node, so this is read before the flags inherit
+    if (preview && !background && (node.modinst->isBackground() || (!highlight && node.modinst->isHighlight()))) {
+      extras.push_back({&node, world, node.modinst->isBackground()});
+    }
     background = background || node.modinst->isBackground();
     highlight = highlight || node.modinst->isHighlight();
     if (dynamic_cast<const ListNode *>(&node) || dynamic_cast<const RootNode *>(&node)) {
-      for (const auto& child : node.getChildren()) list(*child, background, highlight, first);
+      for (const auto& child : node.getChildren()) list(*child, background, highlight, first, world);
       return;
     }
     if (!first) out << ",";
     first = false;
-    write(node, background, highlight);
+    write(node, background, highlight, world);
   }
 
   std::string at(const Location& loc)
@@ -379,12 +403,14 @@ private:
   const Tree *tree;
   /** -O fgjson/mesh=true: inline OpenSCAD's render of the nodes a consumer has no exact counterpart for. */
   bool mesh;
+  /** -O fgjson/preview=true: collect the `%` / `#` subtrees (`extras`) for the preview sidecar. */
+  bool preview;
   std::unordered_map<std::string, size_t> fileIndex;
   std::vector<std::pair<const char *, std::string>> args;
 
   void arg(const char *name, std::string value) { args.emplace_back(name, std::move(value)); }
 
-  void write(const AbstractNode& node, bool background, bool highlight)
+  void write(const AbstractNode& node, bool background, bool highlight, const Transform3d& world)
   {
     // the .csg's keyword: TransformNode::name() is "transform" but it prints itself as multmatrix(…)
     out << "{\"node\":" << quote(dynamic_cast<const TransformNode *>(&node) ? std::string("multmatrix") : node.name());
@@ -424,9 +450,11 @@ private:
     }
 
     if (!node.getChildren().empty()) {
+      const auto *transform = dynamic_cast<const TransformNode *>(&node);
+      const Transform3d below = transform ? Transform3d(world * transform->matrix) : world;
       out << ",\"children\":[";
       bool first = true;
-      for (const auto& child : node.getChildren()) list(*child, false, false, first);
+      for (const auto& child : node.getChildren()) list(*child, false, false, first, below);
       out << "]";
     }
     out << "}";
@@ -733,6 +761,145 @@ void writeFiles(std::ostream& out, const FgjsonWriter& writer)
   out << "]";
 }
 
+/** Little-endian binary, appended in place: the preview sidecar is a few typed arrays, not JSON. */
+struct Bytes {
+  std::string buf;
+  void u8(uint8_t v) { buf.push_back(static_cast<char>(v)); }
+  void u16(uint16_t v) { for (int i = 0; i < 2; ++i) u8(static_cast<uint8_t>(v >> (8 * i))); }
+  void u32(uint32_t v) { for (int i = 0; i < 4; ++i) u8(static_cast<uint8_t>(v >> (8 * i))); }
+  void f32(float v) { uint32_t bits; std::memcpy(&bits, &v, 4); u32(bits); }
+};
+
+/** No colour on a face: the consumer draws the colour scheme's face colour. */
+constexpr uint32_t NO_COLOR = 0xFFFFFFFFu;
+
+/**
+ * One mesh of the sidecar: `kind` 0 = the model, 1 = a `%` subtree, 2 = a `#` subtree; `dim` 2 or 3 (a 2D model is
+ * its tessellation at z = 0, which the consumer draws double-sided). Faces are triangles; a PolySet with other
+ * polygons is tessellated first. Returns the triangle count.
+ */
+uint32_t appendMesh(Bytes& bytes, uint8_t kind, uint8_t dim, const PolySet& input, const Transform3d& world)
+{
+  std::unique_ptr<PolySet> owned;
+  const PolySet *mesh = &input;
+  if (!input.isTriangular()) {
+    owned = PolySetUtils::tessellate_faces(input);
+    mesh = owned.get();
+  }
+  const bool identity = world.matrix().isIdentity(1e-12);
+  bytes.u8(kind);
+  bytes.u8(dim);
+  bytes.u16(0);
+  bytes.u32(static_cast<uint32_t>(mesh->vertices.size()));
+  for (const auto& v : mesh->vertices) {
+    const Vector3d p = identity ? v : Vector3d(world * v);
+    bytes.f32(static_cast<float>(p[0]));
+    bytes.f32(static_cast<float>(p[1]));
+    bytes.f32(static_cast<float>(p[2]));
+  }
+  // a mirroring transform turns the faces inside out: flip them back, as PolySet::transform does
+  const bool mirrored = !identity && world.matrix().determinant() < 0;
+  uint32_t triangles = 0;
+  for (const auto& face : mesh->indices) {
+    if (face.size() == 3) ++triangles;
+  }
+  bytes.u32(triangles);
+  for (const auto& face : mesh->indices) {
+    if (face.size() != 3) continue;
+    bytes.u32(static_cast<uint32_t>(face[0]));
+    bytes.u32(static_cast<uint32_t>(mirrored ? face[2] : face[1]));
+    bytes.u32(static_cast<uint32_t>(mirrored ? face[1] : face[2]));
+  }
+  const bool colored = !mesh->colors.empty() && mesh->color_indices.size() == mesh->indices.size();
+  bytes.u32(colored ? static_cast<uint32_t>(mesh->colors.size()) : 0u);
+  if (colored) {
+    for (const auto& c : mesh->colors) {
+      bytes.f32(c.r());
+      bytes.f32(c.g());
+      bytes.f32(c.b());
+      bytes.f32(c.a() < 0 ? 1.0f : c.a());
+    }
+  }
+  for (size_t k = 0; k < mesh->indices.size(); ++k) {
+    if (mesh->indices[k].size() != 3) continue;
+    const int32_t index = colored ? mesh->color_indices[k] : -1;
+    bytes.u32(index < 0 ? NO_COLOR : static_cast<uint32_t>(index));
+  }
+  return triangles;
+}
+
+/** `geom` (a render's result, maybe a list) as meshes of `kind`, each in `world`; returns the triangles written. */
+uint32_t appendGeometry(Bytes& bytes, uint32_t& meshes, uint8_t kind, const std::shared_ptr<const Geometry>& geom, const Transform3d& world)
+{
+  if (!geom || geom->isEmpty()) return 0;
+  if (const auto list = std::dynamic_pointer_cast<const GeometryList>(geom)) {
+    uint32_t triangles = 0;
+    for (const auto& item : list->flatten()) triangles += appendGeometry(bytes, meshes, kind, item.second, world);
+    return triangles;
+  }
+  if (const auto poly = std::dynamic_pointer_cast<const Polygon2d>(geom)) {
+    const auto ps = poly->tessellate();
+    if (!ps || ps->isEmpty()) return 0;
+    ++meshes;
+    return appendMesh(bytes, kind, 2, *ps, world);
+  }
+  const auto ps = PolySetUtils::getGeometryAsPolySet(geom);
+  if (!ps || ps->isEmpty()) return 0;
+  ++meshes;
+  return appendMesh(bytes, kind, 3, *ps, world);
+}
+
+/**
+ * The preview sidecar (`-O fgjson/preview=true`): `FGPV`, u32 version 1, u32 mesh count, then per mesh
+ * u8 kind, u8 dim, u16 0, u32 nv, f32 xyz × nv, u32 nt, u32 abc × nt, u32 nc, f32 rgba × nc, u32 colour index × nt
+ * (0xFFFFFFFF = none). The root is rendered as OpenSCAD renders it (the Manifold backend keeps the colours); the `%`
+ * and `#` subtrees each on their own, moved into world coordinates by the transforms above them.
+ */
+void writePreview(std::ostream& out, const Tree& tree, const AbstractNode& root, const std::vector<FgjsonWriter::Extra>& extras, const std::string& file)
+{
+#if defined(ENABLE_CGAL) || defined(ENABLE_MANIFOLD)
+  Bytes bytes;
+  uint32_t meshes = 0;
+  uint32_t triangles = 0;
+  bytes.buf += "FGPV";
+  bytes.u32(1);
+  bytes.u32(0); // the mesh count, patched below
+  {
+    // What OpenSCAD says while rendering is what its own render says, which carries on: a warning, not an error.
+    const auto from = logged.size();
+    GeometryEvaluator evaluator(tree);
+    triangles += appendGeometry(bytes, meshes, 0, evaluator.evaluateGeometry(root, true), Transform3d::Identity());
+    for (const auto& extra : extras) {
+      const uint8_t kind = extra.background ? 1 : 2;
+      // a list node evaluated on its own is pruned for its modifier: its children, one by one, say the same
+      if (dynamic_cast<const ListNode *>(extra.node) || dynamic_cast<const RootNode *>(extra.node)) {
+        for (const auto& child : extra.node->getChildren()) {
+          triangles += appendGeometry(bytes, meshes, kind, evaluator.evaluateGeometry(*child, true), extra.world);
+        }
+      } else {
+        triangles += appendGeometry(bytes, meshes, kind, evaluator.evaluateGeometry(*extra.node, true), extra.world);
+      }
+    }
+    for (auto k = from; k < logged.size(); ++k) {
+      if (logged[k].message.group == message_group::Error) logged[k].message.group = message_group::Warning;
+    }
+  }
+  for (int i = 0; i < 4; ++i) bytes.buf[8 + i] = static_cast<char>(meshes >> (8 * i));
+  std::ofstream sidecar(file, std::ios::binary);
+  sidecar.write(bytes.buf.data(), static_cast<std::streamsize>(bytes.buf.size()));
+  if (!sidecar) {
+    LOG(message_group::Warning, "The preview could not be written to %1$s", file);
+    out << "\"preview\":null,";
+    return;
+  }
+  out << "\"preview\":{\"meshes\":" << meshes << ",\"triangles\":" << triangles << "},";
+#else
+  (void)tree; (void)root; (void)extras; (void)file;
+  LOG(message_group::Warning, "This OpenSCAD build has no geometry backend: no preview");
+  out << "\"preview\":null,";
+#endif
+}
+
 }  // namespace
 
 void fgjson_collect_messages()
@@ -746,13 +913,21 @@ void export_fgjson(const Tree& tree, const AbstractNode& root, SourceFile *root_
                    const std::unordered_map<std::string, std::string>& options, bool aborted, std::ostream& out)
 {
   FullPrecisionScope full;
-  const auto meshOption = options.find("mesh");
-  FgjsonWriter writer(out, &tree, meshOption != options.end() && (meshOption->second == "true" || meshOption->second == "1"));
+  const auto flag = [&](const char *name) {
+    const auto found = options.find(name);
+    return found != options.end() && (found->second == "true" || found->second == "1");
+  };
+  const bool preview = flag("preview");
+  FgjsonWriter writer(out, &tree, flag("mesh"), preview);
   out << "{\"format\":\"forgent3d-openscad-tree\",\"version\":1,\"tree\":[";
   bool first = true;
   writer.list(root, false, false, first);
   out << "],";
   if (aborted) out << "\"aborted\":true,";
+  // the render of what came before an abort is not the model: no preview of it either
+  const auto output = options.find("output");
+  if (preview && !aborted) writePreview(out, tree, root, writer.extras, (output != options.end() ? output->second : path.generic_string()) + ".preview");
+  else if (preview) out << "\"preview\":null,";
 
   std::ostringstream params;
   export_param(root_file, path, params);
